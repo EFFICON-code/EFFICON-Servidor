@@ -1,10 +1,9 @@
 # main.py — EFFICON API Gateway + PostgreSQL Database + ChatGPT Inteligente
-from flask import Flask, request, jsonify, make_response
-import os, requests, traceback, json, time
+from flask import Flask, request, jsonify
+import os, requests, traceback, json
 from datetime import datetime
-from pathlib import Path
-import psycopg2
-from psycopg2.extras import Json
+from urllib.parse import urlparse
+import pg8000.dbapi
 
 app = Flask(__name__)
 
@@ -14,21 +13,34 @@ PROJECT_ID = os.getenv("OPENAI_PROJECT_ID", "")
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 MODEL      = os.getenv("MODEL", "gpt-4o")
 
-# ================= Configuración PostgreSQL (Railway) =================
+# ================= Configuración PostgreSQL (pg8000) =================
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 def get_db_connection():
     if not DATABASE_URL:
         raise Exception("DATABASE_URL no está configurada.")
-    return psycopg2.connect(DATABASE_URL)
+        raise Exception("DATABASE_URL no está configurada en Railway.")
+    
+    # Desarmamos la URL para dársela en bandeja de plata a pg8000
+    parsed = urlparse(DATABASE_URL)
+    return pg8000.dbapi.connect(
+        user=parsed.username,
+        password=parsed.password,
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        database=parsed.path.lstrip('/')
+    )
 
 def init_db():
     if not DATABASE_URL:
-        print("Aviso: DATABASE_URL no detectada. La BD no se inicializará localmente.")
+        print("Aviso: DATABASE_URL no detectada.")
         return
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        
+        # Ocultar advertencias si la secuencia ya existe
+        conn.autocommit = True 
         cur.execute("CREATE SEQUENCE IF NOT EXISTS tramite_seq START 1;")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS tramites_efficom (
@@ -39,14 +51,15 @@ def init_db():
                 fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        conn.commit()
+        conn.autocommit = False # Restaurar seguridad
+        
         cur.close()
         conn.close()
-        print("PostgreSQL inicializado correctamente.")
+        print("PostgreSQL inicializado correctamente con pg8000.")
     except Exception as e:
         print(f"Error inicializando BD: {e}")
 
-# Ejecutar inicialización
+# Ejecutar inicialización al arrancar
 init_db()
 
 # =================================================================
@@ -70,10 +83,12 @@ def guardar_tramite():
         # Genera el ID: REQ-2026-0001
         nuevo_id = f"REQ-{anio_actual}-{str(secuencia).zfill(4)}"
         
+        # Usamos cast para garantizar que PostgreSQL lo guarde como JSON puro
+        json_string = json.dumps(payload)
         cur.execute("""
             INSERT INTO tramites_efficom (id_tramite, estado, datos_completos)
-            VALUES (%s, %s, %s)
-        """, (nuevo_id, estado_inicial, Json(payload)))
+            VALUES (%s, %s, cast(%s as jsonb))
+        """, (nuevo_id, estado_inicial, json_string))
         
         conn.commit()
         cur.close()
@@ -119,10 +134,9 @@ def chatgpt():
     if not user_prompt:
         return jsonify({"ok": False, "text": "Prompt vacío"}), 200
 
-    # Potenciador Cognitivo Universal
     potenciador_cognitivo = (
         "DIRECTIVA DE RAZONAMIENTO AVANZADO: Asume inmediatamente el rol. "
-        "REGLAS: 1. Piensa paso a paso. 2. ESTRICTAMENTE PROHIBIDO usar frases de relleno, saludos o introducciones. "
+        "REGLAS: 1. Piensa paso a paso. 2. ESTRICTAMENTE PROHIBIDO usar frases de relleno. "
         "3. Entrega un resultado final impecable y directo al grano."
     )
     system_msg_final = f"{potenciador_cognitivo}\n\nINSTRUCCIONES DEL USUARIO:\n{system_msg_cliente}"
@@ -133,7 +147,7 @@ def chatgpt():
 
 @app.get("/")
 def home():
-    return jsonify({"ok": True, "message": "EFFICON Server Activo."}), 200
+    return jsonify({"ok": True, "message": "EFFICON Server Activo con pg8000."}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

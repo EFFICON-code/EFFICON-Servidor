@@ -18,7 +18,6 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 def get_db_connection():
     if not DATABASE_URL:
-        raise Exception("DATABASE_URL no está configurada.")
         raise Exception("DATABASE_URL no está configurada en Railway.")
     
     # Desarmamos la URL para dársela en bandeja de plata a pg8000

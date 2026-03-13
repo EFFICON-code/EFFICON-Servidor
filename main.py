@@ -98,7 +98,41 @@ def guardar_tramite():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
+# =================================================================
+# RUTA 1.5: DESCARGAR TRÁMITE (Para Compras Públicas)
+# =================================================================
+@app.get("/obtener_tramite/<id_tramite>")
+def obtener_tramite(id_tramite):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Buscamos el trámite exacto en la base de datos
+        cur.execute("""
+            SELECT estado, datos_completos 
+            FROM tramites_efficom 
+            WHERE id_tramite = %s
+        """, (id_tramite,))
+        resultado = cur.fetchone()
+        
+        cur.close()
+        conn.close()
 
+        # Si lo encuentra, lo devuelve limpio. Si no, avisa que no existe.
+        if resultado:
+            estado, datos_completos = resultado
+            return jsonify({
+                "ok": True,
+                "id_tramite": id_tramite,
+                "estado": estado,
+                "datos_completos": datos_completos
+            }), 200
+        else:
+            return jsonify({"ok": False, "error": "Trámite no encontrado en la base de datos"}), 404
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
 # =================================================================
 # RUTA 2: CHATGPT (Motor de Inteligencia EFFICON)
 # =================================================================

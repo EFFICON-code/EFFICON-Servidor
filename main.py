@@ -154,7 +154,7 @@ def actualizar_tramite():
         # Buscamos la fila exacta y le caemos encima con los datos nuevos
         cur.execute("""
             UPDATE tramites_efficom 
-            SET datos_completos = cast(%s as jsonb),
+            SET datos_completos = datos_completos || cast(%s as jsonb),
                 fecha_actualizacion = CURRENT_TIMESTAMP
             WHERE id_tramite = %s
         """, (json_string, id_tramite))

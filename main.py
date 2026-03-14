@@ -62,7 +62,7 @@ def init_db():
 init_db()
 
 # =================================================================
-# RUTA 1: GUARDAR TRÁMITE (Desde la Unidad Requirente)
+# RUTA 1: CREAR TRÁMITE NUEVO (Desde la Unidad Requirente)
 # =================================================================
 @app.post("/guardar_tramite")
 def guardar_tramite():
@@ -98,8 +98,9 @@ def guardar_tramite():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
+
 # =================================================================
-# RUTA 1.5: DESCARGAR TRÁMITE (Para Compras Públicas)
+# RUTA 2: DESCARGAR TRÁMITE (Para Compras Públicas)
 # =================================================================
 @app.get("/obtener_tramite/<id_tramite>")
 def obtener_tramite(id_tramite):
@@ -118,7 +119,6 @@ def obtener_tramite(id_tramite):
         cur.close()
         conn.close()
 
-        # Si lo encuentra, lo devuelve limpio. Si no, avisa que no existe.
         if resultado:
             estado, datos_completos = resultado
             return jsonify({
@@ -133,8 +133,48 @@ def obtener_tramite(id_tramite):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
+
 # =================================================================
-# RUTA 2: CHATGPT (Motor de Inteligencia EFFICON)
+# RUTA 3: ACTUALIZAR TRÁMITE EXISTENTE (Correcciones UR o Compras)
+# =================================================================
+@app.post("/actualizar_tramite")
+def actualizar_tramite():
+    try:
+        payload = request.get_json(silent=True)
+        if not payload or "id_tramite" not in payload:
+            return jsonify({"ok": False, "error": "Falta el ID del trámite para actualizar"}), 400
+            
+        # Sacamos el ID del paquete para saber a quién actualizar
+        id_tramite = payload.pop("id_tramite") 
+        json_string = json.dumps(payload)
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Buscamos la fila exacta y le caemos encima con los datos nuevos
+        cur.execute("""
+            UPDATE tramites_efficom 
+            SET datos_completos = cast(%s as jsonb),
+                fecha_actualizacion = CURRENT_TIMESTAMP
+            WHERE id_tramite = %s
+        """, (json_string, id_tramite))
+        
+        filas_afectadas = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if filas_afectadas == 0:
+            return jsonify({"ok": False, "error": "El trámite no existe en la base de datos."}), 404
+
+        return jsonify({"ok": True, "mensaje": "Actualizado", "id_tramite": id_tramite}), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# =================================================================
+# RUTA 4: CHATGPT (Motor de Inteligencia EFFICON)
 # =================================================================
 def openai_call(messages, max_tokens=2500, temperature=0.2, timeout_s=180):
     if not API_KEY:
@@ -180,7 +220,7 @@ def chatgpt():
 
 @app.get("/")
 def home():
-    return jsonify({"ok": True, "message": "EFFICON Server Activo con pg8000."}), 200
+    return jsonify({"ok": True, "message": "EFFICON Server Activo con Sistema de Actualización CRUD."}), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

@@ -62,7 +62,7 @@ def init_db():
 init_db()
 
 # =================================================================
-# RUTA 1: GUARDAR O ACTUALIZAR (ID Inteligente desde C8 o C74)
+# RUTA 1: GUARDAR O ACTUALIZAR (Fusión de JSON Segura)
 # =================================================================
 @app.post("/guardar_tramite")
 def guardar_tramite():
@@ -74,29 +74,33 @@ def guardar_tramite():
         estado_inicial = payload.get("estado", "EN_COMPRAS")
         prefijo = str(payload.get("prefijo_tramite", "REQ")).strip().upper()
         
-        # PRIORIDAD: Si viene un id_tramite en el paquete (desde C74), es ACTUALIZACIÓN
+        # Atrapamos el ID si es una actualización (ej. viene de Compras)
         id_a_usar = payload.get("id_tramite")
         
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Si NO hay ID, generamos uno NUEVO (Primera vez)
+        # Si NO hay ID, generamos uno NUEVO (Unidad Requirente por primera vez)
         if not id_a_usar:
             cur.execute("SELECT nextval('tramite_seq');")
             secuencia = cur.fetchone()[0]
             anio_actual = datetime.now().year
             id_a_usar = f"{prefijo}-{anio_actual}-{str(secuencia).zfill(4)}"
+        else:
+            # Aseguramos que si mandan un ID, esté limpio y en mayúsculas
+            id_a_usar = str(id_a_usar).strip().upper()
         
-        # Guardamos el JSON completo. 
-        # Usamos ON CONFLICT para que si el ID ya existe, SOBREESCRIBA todo.
         json_string = json.dumps(payload)
+        
+        # EL TRUCO ESTÁ AQUÍ: || EXCLUDED.datos_completos
+        # Esto le dice a la base de datos: "Conserva lo que ya tienes y agrégale lo nuevo"
         cur.execute("""
             INSERT INTO tramites_efficom (id_tramite, estado, datos_completos, fecha_actualizacion)
             VALUES (%s, %s, cast(%s as jsonb), CURRENT_TIMESTAMP)
             ON CONFLICT (id_tramite) 
             DO UPDATE SET 
                 estado = EXCLUDED.estado,
-                datos_completos = EXCLUDED.datos_completos,
+                datos_completos = tramites_efficom.datos_completos || EXCLUDED.datos_completos,
                 fecha_actualizacion = CURRENT_TIMESTAMP;
         """, (id_a_usar, estado_inicial, json_string))
         

@@ -62,7 +62,7 @@ def init_db():
 init_db()
 
 # =================================================================
-# RUTA 1: CREAR TRÁMITE NUEVO (Desde la Unidad Requirente)
+# RUTA 1: CREAR TRÁMITE NUEVO (ID Personalizado desde C8)
 # =================================================================
 @app.post("/guardar_tramite")
 def guardar_tramite():
@@ -72,17 +72,24 @@ def guardar_tramite():
             return jsonify({"ok": False, "error": "No se recibieron datos JSON"}), 400
             
         estado_inicial = payload.get("estado", "EN_COMPRAS")
+        
+        # 1. Atrapamos el prefijo que viene de la fórmula en C8
+        # .strip().upper() asegura que no haya espacios y todo sea mayúsculas
+        prefijo = str(payload.get("prefijo_tramite", "REQ")).strip().upper()
+        
         conn = get_db_connection()
         cur = conn.cursor()
         
+        # 2. Obtenemos el siguiente número de la secuencia global
         cur.execute("SELECT nextval('tramite_seq');")
         secuencia = cur.fetchone()[0]
         anio_actual = datetime.now().year
         
-        # Genera el ID: REQ-2026-0001
-        nuevo_id = f"REQ-{anio_actual}-{str(secuencia).zfill(4)}"
+        # 3. Ensamblamos el ID Maestro: SIGLAS-AÑO-SECUENCIA
+        # Resultado ej: IC-CBCC-2026-0001
+        nuevo_id = f"{prefijo}-{anio_actual}-{str(secuencia).zfill(4)}"
         
-        # Usamos cast para garantizar que PostgreSQL lo guarde como JSON puro
+        # Guardamos el JSON completo
         json_string = json.dumps(payload)
         cur.execute("""
             INSERT INTO tramites_efficom (id_tramite, estado, datos_completos)

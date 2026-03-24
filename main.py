@@ -111,30 +111,42 @@ def guardar_tramite():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # =================================================================
-# RUTA 2: DESCARGAR (Sin cambios, pero ahora más robusta)
+# RUTA 2: DESCARGAR (Soporta IDs largos con guiones)
 # =================================================================
-@app.get("/obtener_tramite/<id_tramite>")
+@app.get("/obtener_tramite/<path:id_tramite>")
 def obtener_tramite(id_tramite):
     try:
+        # 1. Limpieza absoluta del ID recibido
+        # Quitamos espacios y forzamos Mayúsculas
+        id_limpio = str(id_tramite).strip().upper()
+        
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Buscamos el ID que manda el InputBox de Excel
-        cur.execute("SELECT estado, datos_completos FROM tramites_efficom WHERE id_tramite = %s", (id_tramite.strip().upper(),))
-        resultado = cur.fetchone()
+        # 2. Búsqueda exacta en PostgreSQL
+        cur.execute("""
+            SELECT estado, datos_completos 
+            FROM tramites_efficom 
+            WHERE id_tramite = %s
+        """, (id_limpio,))
         
+        resultado = cur.fetchone()
         cur.close()
         conn.close()
 
         if resultado:
             return jsonify({
                 "ok": True,
-                "id_tramite": id_tramite,
+                "id_tramite": id_limpio,
                 "estado": resultado[0],
                 "datos_completos": resultado[1]
             }), 200
         else:
-            return jsonify({"ok": False, "error": f"El código {id_tramite} no existe."}), 404
+            # Si no lo encuentra, te dirá exactamente qué ID buscó
+            return jsonify({
+                "ok": False, 
+                "error": f"El trámite '{id_limpio}' no existe."
+            }), 404
 
     except Exception as e:
         traceback.print_exc()

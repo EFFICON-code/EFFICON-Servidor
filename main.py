@@ -20,7 +20,6 @@ def get_db_connection():
     if not DATABASE_URL:
         raise Exception("DATABASE_URL no está configurada en Railway.")
     
-    # Desarmamos la URL para dársela en bandeja de plata a pg8000
     parsed = urlparse(DATABASE_URL)
     return pg8000.dbapi.connect(
         user=parsed.username,
@@ -38,7 +37,6 @@ def init_db():
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Ocultar advertencias si la secuencia ya existe
         conn.autocommit = True 
         cur.execute("CREATE SEQUENCE IF NOT EXISTS tramite_seq START 1;")
         cur.execute("""
@@ -50,19 +48,17 @@ def init_db():
                 fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        conn.autocommit = False # Restaurar seguridad
-        
+        conn.autocommit = False 
         cur.close()
         conn.close()
-        print("PostgreSQL inicializado correctamente con pg8000.")
+        print("PostgreSQL inicializado correctamente.")
     except Exception as e:
         print(f"Error inicializando BD: {e}")
 
-# Ejecutar inicialización al arrancar
 init_db()
 
 # =================================================================
-# RUTA 1: GUARDAR O ACTUALIZAR (Fusión Estricta y Blindada)
+# RUTA 1: CREACIÓN Y FUSIÓN MAESTRA
 # =================================================================
 @app.post("/guardar_tramite")
 def guardar_tramite():
@@ -74,37 +70,29 @@ def guardar_tramite():
         estado_inicial = payload.get("estado", "EN_COMPRAS")
         prefijo = str(payload.get("prefijo_tramite", "REQ")).strip().upper()
         
-        # 1. Sacamos el ID del paquete. Usamos pop() para extraerlo y quitarlo del JSON 
-        # para que no ensucie los datos de las tablas.
+        # Sacamos el ID para saber si es nuevo o actualización
         id_a_usar = payload.pop("id_tramite", None)
         
         conn = get_db_connection()
         cur = conn.cursor()
 
         if not id_a_usar:
-            # ==========================================
-            # ESCENARIO A: ES COMPLETAMENTE NUEVO (UR)
-            # ==========================================
+            # ES NUEVO (Nace en Unidad Requirente)
             cur.execute("SELECT nextval('tramite_seq');")
             secuencia = cur.fetchone()[0]
             anio_actual = datetime.now().year
             id_a_usar = f"{prefijo}-{anio_actual}-{str(secuencia).zfill(4)}"
             
             json_string = json.dumps(payload)
-            
             cur.execute("""
                 INSERT INTO tramites_efficom (id_tramite, estado, datos_completos, fecha_actualizacion)
                 VALUES (%s, %s, cast(%s as jsonb), CURRENT_TIMESTAMP)
             """, (id_a_usar, estado_inicial, json_string))
-            
         else:
-            # ==========================================
-            # ESCENARIO B: ACTUALIZACIÓN (Compras o Admin)
-            # ==========================================
+            # ES ACTUALIZACIÓN (Compras Públicas u otros)
             id_a_usar = str(id_a_usar).strip().upper()
             json_string = json.dumps(payload)
             
-            # Forzamos una actualización directa a la fila exacta y unimos (||) los JSON
             cur.execute("""
                 UPDATE tramites_efficom 
                 SET estado = %s,
@@ -113,36 +101,31 @@ def guardar_tramite():
                 WHERE id_tramite = %s
             """, (estado_inicial, json_string, id_a_usar))
             
-            # Si el ID no existe en la base de datos, lanzamos un error a Excel
             if cur.rowcount == 0:
                 cur.close()
                 conn.close()
-                return jsonify({"ok": False, "error": f"El trámite '{id_a_usar}' no existe. Verifique el código."}), 404
+                return jsonify({"ok": False, "error": f"El trámite '{id_a_usar}' no existe."}), 404
 
         conn.commit()
         cur.close()
         conn.close()
-
-        return jsonify({"ok": True, "mensaje": "Procesado correctamente", "id_tramite": id_a_usar}), 200
-
+        return jsonify({"ok": True, "mensaje": "Procesado", "id_tramite": id_a_usar}), 200
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # =================================================================
-# RUTA 2: DESCARGAR (Soporta IDs largos con guiones)
+# RUTA 2: DESCARGAR TRÁMITE
 # =================================================================
 @app.get("/obtener_tramite/<path:id_tramite>")
 def obtener_tramite(id_tramite):
     try:
-        # 1. Limpieza absoluta del ID recibido
-        # Quitamos espacios y forzamos Mayúsculas
+        # Limpieza absoluta de espacios
         id_limpio = str(id_tramite).strip().upper()
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # 2. Búsqueda exacta en PostgreSQL
         cur.execute("""
             SELECT estado, datos_completos 
             FROM tramites_efficom 
@@ -161,40 +144,37 @@ def obtener_tramite(id_tramite):
                 "datos_completos": resultado[1]
             }), 200
         else:
-            # Si no lo encuentra, te dirá exactamente qué ID buscó
-            return jsonify({
-                "ok": False, 
-                "error": f"El trámite '{id_limpio}' no existe."
-            }), 404
-
+            return jsonify({"ok": False, "error": f"El trámite '{id_limpio}' no existe."}), 404
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # =================================================================
-# RUTA 3: ACTUALIZAR TRÁMITE EXISTENTE (Correcciones UR o Compras)
+# RUTA 3: ACTUALIZACIÓN EXPRESA BLINDADA
 # =================================================================
 @app.post("/actualizar_tramite")
 def actualizar_tramite():
     try:
         payload = request.get_json(silent=True)
         if not payload or "id_tramite" not in payload:
-            return jsonify({"ok": False, "error": "Falta el ID del trámite para actualizar"}), 400
+            return jsonify({"ok": False, "error": "Falta el ID del trámite"}), 400
             
-        # Sacamos el ID del paquete para saber a quién actualizar
-        id_tramite = payload.pop("id_tramite") 
+        # Limpieza estricta
+        id_tramite = str(payload.pop("id_tramite")).strip().upper()
+        estado_nuevo = payload.get("estado", "ACTUALIZADO")
         json_string = json.dumps(payload)
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Buscamos la fila exacta y le caemos encima con los datos nuevos
+        # Fusión JSON exacta (Evita sobreescritura destructiva)
         cur.execute("""
             UPDATE tramites_efficom 
-            SET datos_completos = datos_completos || cast(%s as jsonb),
+            SET estado = %s,
+                datos_completos = datos_completos || cast(%s as jsonb),
                 fecha_actualizacion = CURRENT_TIMESTAMP
             WHERE id_tramite = %s
-        """, (json_string, id_tramite))
+        """, (estado_nuevo, json_string, id_tramite))
         
         filas_afectadas = cur.rowcount
         conn.commit()
@@ -202,7 +182,7 @@ def actualizar_tramite():
         conn.close()
 
         if filas_afectadas == 0:
-            return jsonify({"ok": False, "error": "El trámite no existe en la base de datos."}), 404
+            return jsonify({"ok": False, "error": f"El trámite '{id_tramite}' no existe."}), 404
 
         return jsonify({"ok": True, "mensaje": "Actualizado", "id_tramite": id_tramite}), 200
 
@@ -211,7 +191,7 @@ def actualizar_tramite():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # =================================================================
-# RUTA 4: CHATGPT (Motor de Inteligencia EFFICON)
+# RUTA 4: CHATGPT
 # =================================================================
 def openai_call(messages, max_tokens=2500, temperature=0.2, timeout_s=180):
     if not API_KEY:

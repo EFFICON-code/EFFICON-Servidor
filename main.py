@@ -62,7 +62,7 @@ def init_db():
 init_db()
 
 # =================================================================
-# RUTA 1: GUARDAR O ACTUALIZAR (Fusión de JSON Segura)
+# RUTA 1: GUARDAR O ACTUALIZAR (Fusión Estricta y Blindada)
 # =================================================================
 @app.post("/guardar_tramite")
 def guardar_tramite():
@@ -74,41 +74,56 @@ def guardar_tramite():
         estado_inicial = payload.get("estado", "EN_COMPRAS")
         prefijo = str(payload.get("prefijo_tramite", "REQ")).strip().upper()
         
-        # Atrapamos el ID si es una actualización (ej. viene de Compras)
-        id_a_usar = payload.get("id_tramite")
+        # 1. Sacamos el ID del paquete. Usamos pop() para extraerlo y quitarlo del JSON 
+        # para que no ensucie los datos de las tablas.
+        id_a_usar = payload.pop("id_tramite", None)
         
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Si NO hay ID, generamos uno NUEVO (Unidad Requirente por primera vez)
         if not id_a_usar:
+            # ==========================================
+            # ESCENARIO A: ES COMPLETAMENTE NUEVO (UR)
+            # ==========================================
             cur.execute("SELECT nextval('tramite_seq');")
             secuencia = cur.fetchone()[0]
             anio_actual = datetime.now().year
             id_a_usar = f"{prefijo}-{anio_actual}-{str(secuencia).zfill(4)}"
+            
+            json_string = json.dumps(payload)
+            
+            cur.execute("""
+                INSERT INTO tramites_efficom (id_tramite, estado, datos_completos, fecha_actualizacion)
+                VALUES (%s, %s, cast(%s as jsonb), CURRENT_TIMESTAMP)
+            """, (id_a_usar, estado_inicial, json_string))
+            
         else:
-            # Aseguramos que si mandan un ID, esté limpio y en mayúsculas
+            # ==========================================
+            # ESCENARIO B: ACTUALIZACIÓN (Compras o Admin)
+            # ==========================================
             id_a_usar = str(id_a_usar).strip().upper()
-        
-        json_string = json.dumps(payload)
-        
-        # EL TRUCO ESTÁ AQUÍ: || EXCLUDED.datos_completos
-        # Esto le dice a la base de datos: "Conserva lo que ya tienes y agrégale lo nuevo"
-        cur.execute("""
-            INSERT INTO tramites_efficom (id_tramite, estado, datos_completos, fecha_actualizacion)
-            VALUES (%s, %s, cast(%s as jsonb), CURRENT_TIMESTAMP)
-            ON CONFLICT (id_tramite) 
-            DO UPDATE SET 
-                estado = EXCLUDED.estado,
-                datos_completos = tramites_efficom.datos_completos || EXCLUDED.datos_completos,
-                fecha_actualizacion = CURRENT_TIMESTAMP;
-        """, (id_a_usar, estado_inicial, json_string))
-        
+            json_string = json.dumps(payload)
+            
+            # Forzamos una actualización directa a la fila exacta y unimos (||) los JSON
+            cur.execute("""
+                UPDATE tramites_efficom 
+                SET estado = %s,
+                    datos_completos = datos_completos || cast(%s as jsonb),
+                    fecha_actualizacion = CURRENT_TIMESTAMP
+                WHERE id_tramite = %s
+            """, (estado_inicial, json_string, id_a_usar))
+            
+            # Si el ID no existe en la base de datos, lanzamos un error a Excel
+            if cur.rowcount == 0:
+                cur.close()
+                conn.close()
+                return jsonify({"ok": False, "error": f"El trámite '{id_a_usar}' no existe. Verifique el código."}), 404
+
         conn.commit()
         cur.close()
         conn.close()
 
-        return jsonify({"ok": True, "mensaje": "Trámite procesado correctamente", "id_tramite": id_a_usar}), 200
+        return jsonify({"ok": True, "mensaje": "Procesado correctamente", "id_tramite": id_a_usar}), 200
 
     except Exception as e:
         traceback.print_exc()

@@ -62,7 +62,7 @@ def init_db():
 init_db()
 
 # =================================================================
-# RUTA 1: CREAR TRÁMITE NUEVO (ID Personalizado desde C8)
+# RUTA 1: GUARDAR O ACTUALIZAR (ID Inteligente desde C8 o C74)
 # =================================================================
 @app.post("/guardar_tramite")
 def guardar_tramite():
@@ -72,42 +72,46 @@ def guardar_tramite():
             return jsonify({"ok": False, "error": "No se recibieron datos JSON"}), 400
             
         estado_inicial = payload.get("estado", "EN_COMPRAS")
-        
-        # 1. Atrapamos el prefijo que viene de la fórmula en C8
-        # .strip().upper() asegura que no haya espacios y todo sea mayúsculas
         prefijo = str(payload.get("prefijo_tramite", "REQ")).strip().upper()
+        
+        # PRIORIDAD: Si viene un id_tramite en el paquete (desde C74), es ACTUALIZACIÓN
+        id_a_usar = payload.get("id_tramite")
         
         conn = get_db_connection()
         cur = conn.cursor()
+
+        # Si NO hay ID, generamos uno NUEVO (Primera vez)
+        if not id_a_usar:
+            cur.execute("SELECT nextval('tramite_seq');")
+            secuencia = cur.fetchone()[0]
+            anio_actual = datetime.now().year
+            id_a_usar = f"{prefijo}-{anio_actual}-{str(secuencia).zfill(4)}"
         
-        # 2. Obtenemos el siguiente número de la secuencia global
-        cur.execute("SELECT nextval('tramite_seq');")
-        secuencia = cur.fetchone()[0]
-        anio_actual = datetime.now().year
-        
-        # 3. Ensamblamos el ID Maestro: SIGLAS-AÑO-SECUENCIA
-        # Resultado ej: IC-CBCC-2026-0001
-        nuevo_id = f"{prefijo}-{anio_actual}-{str(secuencia).zfill(4)}"
-        
-        # Guardamos el JSON completo
+        # Guardamos el JSON completo. 
+        # Usamos ON CONFLICT para que si el ID ya existe, SOBREESCRIBA todo.
         json_string = json.dumps(payload)
         cur.execute("""
-            INSERT INTO tramites_efficom (id_tramite, estado, datos_completos)
-            VALUES (%s, %s, cast(%s as jsonb))
-        """, (nuevo_id, estado_inicial, json_string))
+            INSERT INTO tramites_efficom (id_tramite, estado, datos_completos, fecha_actualizacion)
+            VALUES (%s, %s, cast(%s as jsonb), CURRENT_TIMESTAMP)
+            ON CONFLICT (id_tramite) 
+            DO UPDATE SET 
+                estado = EXCLUDED.estado,
+                datos_completos = EXCLUDED.datos_completos,
+                fecha_actualizacion = CURRENT_TIMESTAMP;
+        """, (id_a_usar, estado_inicial, json_string))
         
         conn.commit()
         cur.close()
         conn.close()
 
-        return jsonify({"ok": True, "mensaje": "Éxito", "id_tramite": nuevo_id}), 200
+        return jsonify({"ok": True, "mensaje": "Trámite procesado correctamente", "id_tramite": id_a_usar}), 200
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # =================================================================
-# RUTA 2: DESCARGAR TRÁMITE (Para Compras Públicas)
+# RUTA 2: DESCARGAR (Sin cambios, pero ahora más robusta)
 # =================================================================
 @app.get("/obtener_tramite/<id_tramite>")
 def obtener_tramite(id_tramite):
@@ -115,27 +119,22 @@ def obtener_tramite(id_tramite):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Buscamos el trámite exacto en la base de datos
-        cur.execute("""
-            SELECT estado, datos_completos 
-            FROM tramites_efficom 
-            WHERE id_tramite = %s
-        """, (id_tramite,))
+        # Buscamos el ID que manda el InputBox de Excel
+        cur.execute("SELECT estado, datos_completos FROM tramites_efficom WHERE id_tramite = %s", (id_tramite.strip().upper(),))
         resultado = cur.fetchone()
         
         cur.close()
         conn.close()
 
         if resultado:
-            estado, datos_completos = resultado
             return jsonify({
                 "ok": True,
                 "id_tramite": id_tramite,
-                "estado": estado,
-                "datos_completos": datos_completos
+                "estado": resultado[0],
+                "datos_completos": resultado[1]
             }), 200
         else:
-            return jsonify({"ok": False, "error": "Trámite no encontrado en la base de datos"}), 404
+            return jsonify({"ok": False, "error": f"El código {id_tramite} no existe."}), 404
 
     except Exception as e:
         traceback.print_exc()
